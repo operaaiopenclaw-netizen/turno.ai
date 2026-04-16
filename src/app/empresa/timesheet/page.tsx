@@ -72,7 +72,7 @@ export default function TimesheetPage() {
     const open = expanded === t.id
 
     const workedH     = t.hoursWorked ?? 0
-    const shiftPay    = t.shift ? 0 : 0 // We don't have totalPay directly on timesheet
+    const shiftPay    = (t.shift as any)?.totalPay ?? 0
     const checkInFmt  = t.checkInAt  ? formatDateTime(t.checkInAt)  : "—"
     const checkOutFmt = t.checkOutAt ? formatDateTime(t.checkOutAt) : "—"
 
@@ -135,6 +135,13 @@ export default function TimesheetPage() {
             }}>
               <InfoRow label="Horas trabalhadas" value={`${workedH}h`} />
               <InfoRow label="Turno confirmado" value={role} />
+              {shiftPay > 0 && (
+                <InfoRow
+                  label="Valor a pagar (trabalhador)"
+                  value={formatCurrency(shiftPay * 0.82)}
+                  valueColor="var(--primary)"
+                />
+              )}
             </div>
 
             {t.status === "PENDING" && (

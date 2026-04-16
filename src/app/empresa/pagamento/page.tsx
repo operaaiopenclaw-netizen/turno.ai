@@ -10,21 +10,34 @@ import { formatCurrency, formatDateTime } from "@/lib/utils"
 export default function PagamentoPage() {
   const searchParams  = useSearchParams()
   const timesheetId   = searchParams.get("timesheetId")
-  const [payments, setPayments] = useState<Payment[]>([])
-  const [loading,  setLoading]  = useState(true)
-  const [paying,   setPaying]   = useState<string | null>(null)
-  const [toast,    setToast]    = useState("")
-  const [expanded, setExpanded] = useState<string | null>(timesheetId ?? null)
+  const [payments,  setPayments]  = useState<Payment[]>([])
+  const [pendingTs, setPendingTs] = useState<any | null>(null)
+  const [loading,   setLoading]   = useState(true)
+  const [paying,    setPaying]    = useState<string | null>(null)
+  const [toast,     setToast]     = useState("")
+  const [expanded,  setExpanded]  = useState<string | null>(timesheetId ?? null)
 
   useEffect(() => {
     async function load() {
-      const res  = await fetch("/api/payments")
-      const json = await res.json()
-      setPayments(json.data ?? [])
+      setLoading(true)
+      const [paymentsRes, tsRes] = await Promise.all([
+        fetch("/api/payments"),
+        timesheetId ? fetch(`/api/timesheet/${timesheetId}`) : Promise.resolve(null),
+      ])
+      const paymentsJson = await paymentsRes.json()
+      setPayments(paymentsJson.data ?? [])
+
+      if (tsRes) {
+        const tsJson = await tsRes.json()
+        const ts = tsJson.data
+        // Only show as pending if approved and no payment yet
+        const alreadyPaid = (paymentsJson.data ?? []).some((p: Payment) => p.timesheetId === timesheetId)
+        if (ts && ts.status === "APPROVED" && !alreadyPaid) setPendingTs(ts)
+      }
       setLoading(false)
     }
     load()
-  }, [])
+  }, [timesheetId])
 
   async function processPayment(timesheetId: string) {
     setPaying(timesheetId)
@@ -98,14 +111,72 @@ export default function PagamentoPage() {
         <div style={{ display: "flex", justifyContent: "center", paddingTop: 40 }}>
           <Spinner />
         </div>
-      ) : payments.length === 0 ? (
+      ) : payments.length === 0 && !pendingTs ? (
         <EmptyState
           icon="💰"
           title="Nenhum pagamento ainda"
           desc="Pagamentos aparecerão aqui após aprovação dos timesheets."
         />
       ) : (
-        payments.map(p => {
+        <>
+        {/* Pending timesheet ready to pay — arrived from timesheet approve redirect */}
+        {pendingTs && (
+          <Card style={{ marginBottom: 16, border: "0.5px solid rgba(0,207,164,0.4)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#fff" }}>
+                  {pendingTs.worker?.user?.name ?? "Trabalhador"}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--txt-2)", marginTop: 2 }}>
+                  {pendingTs.shift?.role} · {pendingTs.hoursWorked ?? 0}h trabalhadas
+                </div>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <div style={{ fontSize: 18, fontWeight: 800, color: "var(--primary)" }}>
+                  {formatCurrency((pendingTs.shift?.totalPay ?? 0) * 0.82)}
+                </div>
+                <div style={{ fontSize: 10, color: "var(--txt-3)" }}>líquido trabalhador</div>
+              </div>
+            </div>
+            <div style={{
+              padding: "10px 14px",
+              background: "var(--primary-dim)",
+              borderRadius: 9,
+              fontSize: 12,
+              color: "var(--txt-2)",
+              marginBottom: 14,
+              lineHeight: 1.6,
+            }}>
+              💡 Taxa Turno (18%): {formatCurrency((pendingTs.shift?.totalPay ?? 0) * 0.18)} ·
+              Total cobrado: {formatCurrency(pendingTs.shift?.totalPay ?? 0)}
+            </div>
+            <Button
+              full
+              loading={paying === pendingTs.id}
+              onClick={async () => {
+                setPaying(pendingTs.id)
+                const res  = await fetch("/api/payments", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ timesheetId: pendingTs.id }),
+                })
+                const json = await res.json()
+                if (res.ok) {
+                  setPayments(prev => [json.data, ...prev])
+                  setPendingTs(null)
+                  setToast("⚡ Pix enviado com sucesso!")
+                  setTimeout(() => setToast(""), 4000)
+                } else {
+                  setToast(json.error ?? "Erro no pagamento")
+                }
+                setPaying(null)
+              }}
+            >
+              ⚡ Enviar pagamento via Pix
+            </Button>
+          </Card>
+        )}
+        {payments.map(p => {
           const isOpen = expanded === p.id || expanded === p.timesheetId
           const workerName = (p as any).application?.worker?.user?.name ?? "Trabalhador"
           const role       = (p as any).shift?.role ?? "Turno"
@@ -231,7 +302,8 @@ export default function PagamentoPage() {
               )}
             </Card>
           )
-        })
+        })}
+        </>
       )}
 
       {toast && (

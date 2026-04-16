@@ -45,7 +45,12 @@ export default function EmpresaCadastroPage() {
       const json = await res.json()
       if (!res.ok) { setError(json.error ?? "Erro ao cadastrar"); setLoading(false); return }
 
-      await signIn("credentials", { email: form.email, password: form.password, redirect: false })
+      const result = await signIn("credentials", {
+        email: form.email,
+        password: form.password,
+        redirect: false,
+      })
+      if (result?.error) { setError("Conta criada, mas erro ao entrar. Faça login manualmente."); setLoading(false); return }
       router.push("/empresa")
     } catch {
       setError("Erro de conexão")

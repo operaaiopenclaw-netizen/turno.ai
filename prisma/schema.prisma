@@ -105,6 +105,7 @@ enum BackgroundStatus {
 
 enum PixKeyType {
   CPF
+  CNPJ
   EMAIL
   PHONE
   RANDOM
