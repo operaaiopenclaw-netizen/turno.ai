@@ -1,10 +1,13 @@
-import { HardhatUserConfig } from "hardhat/config"
-// Sem toolbox — apenas compilador nativo do Hardhat para gerar os artifacts
+import { config as dotenvConfig } from "dotenv"
+import { resolve } from "path"
 
-const config: HardhatUserConfig = {
+dotenvConfig({ path: resolve(process.cwd(), "../.env") })
+
+/** @type {import('hardhat/config').HardhatUserConfig} */
+export default {
   solidity: {
     version: "0.8.20",
-    settings: { optimizer: { enabled: true, runs: 200 }, viaIR: true },
+    settings: { optimizer: { enabled: true, runs: 200 } },
   },
   networks: {
     amoy: {
@@ -18,13 +21,5 @@ const config: HardhatUserConfig = {
       chainId:  137,
     },
   },
-  paths: {
-    sources:   "./contracts",
-    scripts:   "./scripts",
-    tests:     "./test",
-    cache:     "./cache",
-    artifacts: "./artifacts",
-  },
+  paths: { sources: "./contracts", scripts: "./scripts" },
 }
-
-export default config
