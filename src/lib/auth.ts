@@ -1,12 +1,21 @@
 // src/lib/auth.ts
 import NextAuth from "next-auth"
 import CredentialsProvider from "next-auth/providers/credentials"
-import { PrismaAdapter } from "@auth/prisma-adapter"
 import bcrypt from "bcryptjs"
-import { db } from "@/lib/db"
+
+const SB_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
+const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
+
+async function findUserByEmail(email: string) {
+  const res = await fetch(
+    `${SB_URL}/rest/v1/User?email=eq.${encodeURIComponent(email)}&select=id,email,name,role,passwordHash,worker(id),company(id)&limit=1`,
+    { headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` }, cache: "no-store" }
+  )
+  const rows = await res.json()
+  return rows?.[0] ?? null
+}
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
-  adapter: PrismaAdapter(db),
   session: { strategy: "jwt" },
   pages: {
     signIn: "/",
@@ -22,14 +31,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       async authorize(credentials) {
         if (!credentials?.email || !credentials?.password) return null
 
-        const user = await db.user.findUnique({
-          where: { email: credentials.email as string },
-          include: {
-            worker: { include: { skills: true } },
-            company: true,
-          },
-        })
-
+        const user = await findUserByEmail(credentials.email as string)
         if (!user || !user.passwordHash) return null
 
         const isValid = await bcrypt.compare(
@@ -43,8 +45,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           email: user.email,
           name: user.name,
           role: user.role,
-          workerId: user.worker?.id ?? null,
-          companyId: user.company?.id ?? null,
+          workerId: user.worker?.[0]?.id ?? null,
+          companyId: user.company?.[0]?.id ?? null,
         }
       },
     }),
