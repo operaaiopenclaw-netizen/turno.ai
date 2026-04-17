@@ -6,13 +6,23 @@ import bcrypt from "bcryptjs"
 const SB_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!
 
+async function sbGet(path: string) {
+  const r = await fetch(`${SB_URL}/rest/v1/${path}`, {
+    headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` },
+    cache: "no-store",
+  })
+  return r.json()
+}
+
 async function findUserByEmail(email: string) {
-  const res = await fetch(
-    `${SB_URL}/rest/v1/User?email=eq.${encodeURIComponent(email)}&select=id,email,name,role,passwordHash,worker(id),company(id)&limit=1`,
-    { headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` }, cache: "no-store" }
-  )
-  const rows = await res.json()
-  return rows?.[0] ?? null
+  const users = await sbGet(`User?email=eq.${encodeURIComponent(email)}&select=id,email,name,role,passwordHash&limit=1`)
+  const user = users?.[0]
+  if (!user) return null
+  const [workers, companies] = await Promise.all([
+    sbGet(`Worker?userId=eq.${user.id}&select=id&limit=1`),
+    sbGet(`Company?userId=eq.${user.id}&select=id&limit=1`),
+  ])
+  return { ...user, workerId: workers?.[0]?.id ?? null, companyId: companies?.[0]?.id ?? null }
 }
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
@@ -45,8 +55,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           email: user.email,
           name: user.name,
           role: user.role,
-          workerId: user.worker?.[0]?.id ?? null,
-          companyId: user.company?.[0]?.id ?? null,
+          workerId: user.workerId,
+          companyId: user.companyId,
         }
       },
     }),
