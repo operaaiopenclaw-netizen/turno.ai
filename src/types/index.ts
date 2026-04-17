@@ -113,15 +113,22 @@ export interface Payment {
   id: string
   shiftId: string
   applicationId: string
+  timesheetId?: string
   amount: number
   platformFee: number
   netAmount: number
   pixKey?: string
+  pixKeyType?: PixKeyType
   pixE2eId?: string
+  pixQrCode?: string
   blockchainTxHash?: string
   blockchainBlock?: number
+  blockchainNetwork?: string
+  walletTxId?: string
+  settlementType?: string
   status: PaymentStatus
   paidAt?: string
+  createdAt?: string
 }
 
 export interface Notification {

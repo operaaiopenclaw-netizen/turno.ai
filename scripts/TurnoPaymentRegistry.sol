@@ -1,39 +1,60 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.20;
 
-/// @title TurnoPaymentRegistry
-/// @notice Registro imutável de pagamentos Pix via plataforma Turno
-/// @dev Deploy na rede Polygon para custo mínimo de gas
-
+/**
+ * @title TurnoPaymentRegistry
+ * @notice Registro imutável de pagamentos da plataforma Turno.ai
+ *         Cada pagamento aprovado gera um registro on-chain na Polygon
+ *         como prova auditável da transação de trabalho intermitente.
+ *
+ * @dev Deploy na Polygon Amoy (testnet) ou Polygon Mainnet
+ *      Não há movimentação de tokens neste contrato — apenas registro.
+ *      A liquidação financeira ocorre off-chain via PIX ou carteira interna (BRLC).
+ */
 contract TurnoPaymentRegistry {
-    // ─── EVENTOS ───────────────────────────────────────────────────────────────
-    event PaymentRegistered(
-        bytes32 indexed recordId,
-        string  indexed paymentId,
-        uint256 amountCents,
-        uint256 timestamp
-    );
 
-    // ─── STRUCTS ───────────────────────────────────────────────────────────────
+    // ─── STRUCTS ──────────────────────────────────────────────────────────────
+
     struct PaymentRecord {
         string  paymentId;
         string  workerId;
         string  companyId;
         string  shiftId;
-        uint256 amountCents;
-        string  pixE2eId;
+        uint256 amountCents;       // valor líquido pago ao worker em centavos BRL
+        string  pixE2eId;          // ID fim-a-fim Pix (vazio se liquidado via wallet)
+        string  settlementType;    // "PIX" | "WALLET" | "CARD"
         uint256 timestamp;
+        address registeredBy;
         bool    exists;
     }
 
-    // ─── STATE ─────────────────────────────────────────────────────────────────
-    address public owner;
-    address public turnoOperator; // Endereço autorizado a registrar pagamentos
-    mapping(bytes32 => PaymentRecord) private records;
-    mapping(string => bytes32) private paymentIdToRecord;
-    uint256 public totalRegistered;
+    // ─── STATE ────────────────────────────────────────────────────────────────
 
-    // ─── MODIFIERS ─────────────────────────────────────────────────────────────
+    address public owner;
+    address public operator;
+    uint256 public totalPayments;
+    uint256 public totalAmountCents;
+
+    mapping(bytes32 => PaymentRecord) private _records;
+    mapping(string  => bytes32)       private _paymentIndex;
+    bytes32[] private _allRecords;
+
+    // ─── EVENTS ───────────────────────────────────────────────────────────────
+
+    event PaymentRegistered(
+        bytes32 indexed recordId,
+        string  indexed paymentId,
+        string          workerId,
+        string          companyId,
+        uint256         amountCents,
+        string          settlementType,
+        uint256         timestamp
+    );
+
+    event OperatorUpdated(address indexed oldOperator, address indexed newOperator);
+
+    // ─── MODIFIERS ────────────────────────────────────────────────────────────
+
     modifier onlyOwner() {
         require(msg.sender == owner, "Apenas o owner pode executar");
         _;
@@ -41,100 +62,140 @@ contract TurnoPaymentRegistry {
 
     modifier onlyOperator() {
         require(
-            msg.sender == turnoOperator || msg.sender == owner,
+            msg.sender == operator || msg.sender == owner,
             "Apenas operador autorizado"
         );
         _;
     }
 
-    // ─── CONSTRUCTOR ───────────────────────────────────────────────────────────
+    // ─── CONSTRUCTOR ──────────────────────────────────────────────────────────
+
     constructor(address _operator) {
-        owner          = msg.sender;
-        turnoOperator  = _operator;
+        owner    = msg.sender;
+        operator = _operator;
     }
 
-    // ─── FUNÇÕES PRINCIPAIS ────────────────────────────────────────────────────
+    // ─── WRITE ────────────────────────────────────────────────────────────────
 
-    /// @notice Registra um pagamento Pix confirmado
-    /// @param paymentId   ID interno da plataforma Turno
-    /// @param workerId    ID do trabalhador
-    /// @param companyId   ID da empresa
-    /// @param shiftId     ID do turno
-    /// @param amountCents Valor em centavos (ex: R$150,00 = 15000)
-    /// @param pixE2eId    ID fim-a-fim do Banco Central
-    /// @return recordId   Hash do registro criado
+    /**
+     * @notice Registra um pagamento aprovado na blockchain
+     * @param paymentId      ID único do pagamento na plataforma
+     * @param workerId       ID do trabalhador
+     * @param companyId      ID da empresa
+     * @param shiftId        ID do turno trabalhado
+     * @param amountCents    Valor líquido pago ao worker em centavos BRL
+     * @param pixE2eId       ID fim-a-fim Pix (vazio para pagamentos via wallet)
+     * @param settlementType "PIX", "WALLET" ou "CARD"
+     * @return recordId      Hash único do registro
+     */
     function registerPayment(
         string calldata paymentId,
         string calldata workerId,
         string calldata companyId,
         string calldata shiftId,
-        uint256         amountCents,
-        string calldata pixE2eId
+        uint256 amountCents,
+        string calldata pixE2eId,
+        string calldata settlementType
     ) external onlyOperator returns (bytes32 recordId) {
-        require(bytes(paymentId).length > 0,   "paymentId obrigatorio");
-        require(amountCents > 0,                "valor deve ser positivo");
+        require(bytes(paymentId).length > 0, "paymentId obrigatorio");
+        require(amountCents > 0,             "valor deve ser positivo");
         require(
-            paymentIdToRecord[paymentId] == bytes32(0),
+            _paymentIndex[paymentId] == bytes32(0),
             "Pagamento ja registrado"
         );
 
         recordId = keccak256(abi.encodePacked(
-            paymentId, workerId, companyId, shiftId, amountCents, block.timestamp
+            paymentId,
+            workerId,
+            companyId,
+            shiftId,
+            amountCents,
+            block.timestamp
         ));
 
-        records[recordId] = PaymentRecord({
-            paymentId:   paymentId,
-            workerId:    workerId,
-            companyId:   companyId,
-            shiftId:     shiftId,
-            amountCents: amountCents,
-            pixE2eId:    pixE2eId,
-            timestamp:   block.timestamp,
-            exists:      true
+        _records[recordId] = PaymentRecord({
+            paymentId:      paymentId,
+            workerId:       workerId,
+            companyId:      companyId,
+            shiftId:        shiftId,
+            amountCents:    amountCents,
+            pixE2eId:       pixE2eId,
+            settlementType: settlementType,
+            timestamp:      block.timestamp,
+            registeredBy:   msg.sender,
+            exists:         true
         });
 
-        paymentIdToRecord[paymentId] = recordId;
-        totalRegistered++;
+        _paymentIndex[paymentId] = recordId;
+        _allRecords.push(recordId);
 
-        emit PaymentRegistered(recordId, paymentId, amountCents, block.timestamp);
+        totalPayments++;
+        totalAmountCents += amountCents;
+
+        emit PaymentRegistered(
+            recordId,
+            paymentId,
+            workerId,
+            companyId,
+            amountCents,
+            settlementType,
+            block.timestamp
+        );
     }
 
-    /// @notice Consulta um pagamento pelo ID da plataforma
-    function getPaymentByPaymentId(string calldata paymentId)
-        external view
-        returns (PaymentRecord memory)
+    // ─── READ ─────────────────────────────────────────────────────────────────
+
+    function getPaymentByRecordId(bytes32 recordId)
+        external view returns (PaymentRecord memory)
     {
-        bytes32 rid = paymentIdToRecord[paymentId];
-        require(rid != bytes32(0), "Pagamento nao encontrado");
-        return records[rid];
+        require(_records[recordId].exists, "Registro nao encontrado");
+        return _records[recordId];
     }
 
-    /// @notice Consulta um pagamento pelo recordId (hash)
-    function getPayment(bytes32 recordId)
-        external view
-        returns (
-            string memory workerId,
-            string memory companyId,
-            string memory shiftId,
-            uint256 amountCents,
-            string memory pixE2eId,
-            uint256 timestamp
-        )
+    function getPaymentById(string calldata paymentId)
+        external view returns (PaymentRecord memory)
     {
-        PaymentRecord storage r = records[recordId];
-        require(r.exists, "Registro nao encontrado");
-        return (r.workerId, r.companyId, r.shiftId, r.amountCents, r.pixE2eId, r.timestamp);
+        bytes32 recordId = _paymentIndex[paymentId];
+        require(recordId != bytes32(0), "Pagamento nao encontrado");
+        return _records[recordId];
     }
 
-    /// @notice Verifica se um pagamento existe
-    function paymentExists(string calldata paymentId) external view returns (bool) {
-        return paymentIdToRecord[paymentId] != bytes32(0);
+    function getRecordId(string calldata paymentId)
+        external view returns (bytes32)
+    {
+        return _paymentIndex[paymentId];
     }
 
-    // ─── ADMIN ─────────────────────────────────────────────────────────────────
+    function paymentExists(string calldata paymentId)
+        external view returns (bool)
+    {
+        return _paymentIndex[paymentId] != bytes32(0);
+    }
+
+    function getStats() external view returns (
+        uint256 _totalPayments,
+        uint256 _totalAmountCents
+    ) {
+        return (totalPayments, totalAmountCents);
+    }
+
+    function getRecentRecords(uint256 count)
+        external view returns (bytes32[] memory)
+    {
+        uint256 len = _allRecords.length;
+        uint256 n   = count > len ? len : count;
+        bytes32[] memory result = new bytes32[](n);
+        for (uint256 i = 0; i < n; i++) {
+            result[i] = _allRecords[len - n + i];
+        }
+        return result;
+    }
+
+    // ─── ADMIN ────────────────────────────────────────────────────────────────
 
     function setOperator(address _operator) external onlyOwner {
-        turnoOperator = _operator;
+        emit OperatorUpdated(operator, _operator);
+        operator = _operator;
     }
 
     function transferOwnership(address newOwner) external onlyOwner {

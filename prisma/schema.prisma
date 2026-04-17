@@ -56,10 +56,12 @@ model User {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
-  accounts  Account[]
-  sessions  Session[]
-  worker    Worker?
-  company   Company?
+  accounts      Account[]
+  sessions      Session[]
+  worker        Worker?
+  company       Company?
+  wallet        Wallet?
+  notifications Notification[]
 }
 
 enum UserRole {
@@ -70,31 +72,36 @@ enum UserRole {
 
 // ─── WORKER ───────────────────────────────────────────────────────────────────
 model Worker {
-  id              String   @id @default(cuid())
-  userId          String   @unique
-  cpf             String   @unique
+  id              String          @id @default(cuid())
+  userId          String          @unique
+  cpf             String          @unique
   phone           String
   bio             String?
+  address         String?
   pixKey          String?
   pixKeyType      PixKeyType?
   neighborhood    String?
-  city            String   @default("Curitiba")
-  state           String   @default("PR")
+  city            String          @default("Curitiba")
+  state           String          @default("PR")
   latitude        Float?
   longitude       Float?
-  rating          Float    @default(0)
-  totalShifts     Int      @default(0)
-  totalEarnings   Float    @default(0)
-  cpfVerified     Boolean  @default(false)
+  rating          Float           @default(0)
+  totalShifts     Int             @default(0)
+  totalEarnings   Float           @default(0)
+  cpfVerified     Boolean         @default(false)
   backgroundCheck BackgroundStatus @default(PENDING)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
 
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   skills       WorkerSkill[]
   applications Application[]
   timesheets   Timesheet[]
   reviews      Review[]      @relation("WorkerReviews")
+
+  @@index([neighborhood])
+  @@index([backgroundCheck])
+  @@index([rating])
 }
 
 enum BackgroundStatus {
@@ -116,34 +123,39 @@ model WorkerSkill {
   workerId String
   skill    String
   worker   Worker @relation(fields: [workerId], references: [id], onDelete: Cascade)
+
+  @@index([workerId])
 }
 
 // ─── COMPANY ──────────────────────────────────────────────────────────────────
 model Company {
-  id           String  @id @default(cuid())
-  userId       String  @unique
-  cnpj         String  @unique
+  id           String     @id @default(cuid())
+  userId       String     @unique
+  cnpj         String     @unique
   tradeName    String
   legalName    String
   phone        String
   address      String
   neighborhood String
-  city         String  @default("Curitiba")
-  state        String  @default("PR")
+  city         String     @default("Curitiba")
+  state        String     @default("PR")
   latitude     Float?
   longitude    Float?
   pixKey       String?
   pixKeyType   PixKeyType?
   industry     Industry
-  rating       Float   @default(0)
-  totalShifts  Int     @default(0)
-  verified     Boolean @default(false)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  rating       Float      @default(0)
+  totalShifts  Int        @default(0)
+  verified     Boolean    @default(false)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 
-  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  shifts   Shift[]
-  reviews  Review[]  @relation("CompanyReviews")
+  user    User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shifts  Shift[]
+  reviews Review[]  @relation("CompanyReviews")
+
+  @@index([verified])
+  @@index([industry])
 }
 
 enum Industry {
@@ -186,6 +198,13 @@ model Shift {
   applications Application[]
   timesheets   Timesheet[]
   payments     Payment[]
+  reviews      Review[]
+
+  @@index([companyId])
+  @@index([status])
+  @@index([date])
+  @@index([category])
+  @@index([neighborhood])
 }
 
 enum ShiftStatus {
@@ -214,13 +233,15 @@ model Application {
   payment   Payment?
 
   @@unique([shiftId, workerId])
+  @@index([workerId])
+  @@index([status])
 }
 
 enum ApplicationStatus {
   PENDING
   ACCEPTED
   REJECTED
-  CONFIRMED   // worker confirmed they will show up
+  CONFIRMED
   NO_SHOW
 }
 
@@ -240,6 +261,8 @@ model Timesheet {
   status         TimesheetStatus @default(PENDING)
   approvedAt     DateTime?
   disputeNote    String?
+  resolvedNote   String?
+  resolvedAt     DateTime?
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
 
@@ -247,6 +270,10 @@ model Timesheet {
   shift       Shift        @relation(fields: [shiftId], references: [id])
   worker      Worker       @relation(fields: [workerId], references: [id])
   payment     Payment?
+
+  @@index([workerId])
+  @@index([shiftId])
+  @@index([status])
 }
 
 enum TimesheetStatus {
@@ -258,27 +285,32 @@ enum TimesheetStatus {
 
 // ─── PAYMENT ──────────────────────────────────────────────────────────────────
 model Payment {
-  id              String        @id @default(cuid())
-  shiftId         String
-  applicationId   String        @unique
-  timesheetId     String?       @unique
-  amount          Float
-  platformFee     Float
-  netAmount       Float
-  pixKey          String?
-  pixKeyType      PixKeyType?
-  pixE2eId        String?       // Pix end-to-end ID
-  pixQrCode       String?       // QR code string
-  blockchainTxHash String?      // Polygon transaction hash
+  id               String        @id @default(cuid())
+  shiftId          String
+  applicationId    String        @unique
+  timesheetId      String?       @unique
+  amount           Float
+  platformFee      Float
+  netAmount        Float
+  pixKey           String?
+  pixKeyType       PixKeyType?
+  pixE2eId         String?
+  pixQrCode        String?
+  blockchainTxHash String?
   blockchainBlock  BigInt?
-  status          PaymentStatus @default(PENDING)
-  paidAt          DateTime?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
+  blockchainNetwork String?
+  walletTxId       String?       // WalletTransaction ID do worker
+  status           PaymentStatus @default(PENDING)
+  paidAt           DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
 
   shift        Shift        @relation(fields: [shiftId], references: [id])
   application  Application  @relation(fields: [applicationId], references: [id])
   timesheet    Timesheet?   @relation(fields: [timesheetId], references: [id])
+
+  @@index([shiftId])
+  @@index([status])
 }
 
 enum PaymentStatus {
@@ -289,19 +321,114 @@ enum PaymentStatus {
   REFUNDED
 }
 
+// ─── WALLET ───────────────────────────────────────────────────────────────────
+// Carteira interna em BRLC (stablecoin 1:1 com BRL)
+model Wallet {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  balance      Decimal  @default(0) @db.Decimal(14, 2)   // saldo disponível
+  reserved     Decimal  @default(0) @db.Decimal(14, 2)   // bloqueado em escrow
+  totalIn      Decimal  @default(0) @db.Decimal(14, 2)
+  totalOut     Decimal  @default(0) @db.Decimal(14, 2)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions WalletTransaction[]
+  virtualCard  VirtualCard?
+}
+
+model WalletTransaction {
+  id          String       @id @default(cuid())
+  walletId    String
+  type        WalletTxType
+  amount      Decimal      @db.Decimal(14, 2)
+  fee         Decimal      @default(0) @db.Decimal(14, 2)
+  netAmount   Decimal      @db.Decimal(14, 2)
+  status      TxStatus     @default(PENDING)
+  reference   String?      // PIX e2eId, blockchain txHash, etc.
+  description String?
+  paymentId   String?
+  meta        Json?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  @@index([walletId])
+  @@index([type])
+  @@index([status])
+  @@index([createdAt])
+}
+
+enum WalletTxType {
+  DEPOSIT_PIX       // empresa deposita BRL via PIX → BRLC
+  DEPOSIT_BOLETO    // empresa deposita via boleto
+  ESCROW_LOCK       // empresa reserva para pagamento de turno
+  ESCROW_RELEASE    // worker recebe após aprovação
+  ESCROW_REFUND     // devolve à empresa se cancelado
+  CASHOUT_PIX       // worker saca para PIX
+  CARD_SPEND        // worker gasta com cartão virtual
+  CARD_REFUND       // estorno de cartão
+  PLATFORM_FEE      // taxa da plataforma
+}
+
+enum TxStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+  REVERSED
+}
+
+// ─── VIRTUAL CARD ─────────────────────────────────────────────────────────────
+model VirtualCard {
+  id          String     @id @default(cuid())
+  walletId    String     @unique
+  last4       String
+  expiryMonth Int
+  expiryYear  Int
+  status      CardStatus @default(PENDING)
+  limitDaily  Decimal    @default(500) @db.Decimal(14, 2)
+  spentToday  Decimal    @default(0) @db.Decimal(14, 2)
+  lastResetAt DateTime   @default(now())
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+}
+
+enum CardStatus {
+  PENDING
+  ACTIVE
+  BLOCKED
+  CANCELLED
+}
+
 // ─── REVIEW ──────────────────────────────────────────────────────────────────
 model Review {
-  id          String   @id @default(cuid())
-  fromType    String   // "WORKER" | "COMPANY"
-  workerId    String?
-  companyId   String?
-  rating      Int      // 1-5
-  comment     String?
-  shiftId     String
-  createdAt   DateTime @default(now())
+  id         String     @id @default(cuid())
+  fromType   ReviewFrom
+  reviewerId String     // userId de quem avalia
+  workerId   String?
+  companyId  String?
+  shiftId    String
+  rating     Int
+  comment    String?
+  createdAt  DateTime   @default(now())
 
   worker  Worker?  @relation("WorkerReviews", fields: [workerId], references: [id])
   company Company? @relation("CompanyReviews", fields: [companyId], references: [id])
+  shift   Shift    @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+
+  @@unique([reviewerId, shiftId])
+  @@index([workerId])
+  @@index([companyId])
+  @@index([shiftId])
+}
+
+enum ReviewFrom {
+  WORKER
+  COMPANY
 }
 
 // ─── NOTIFICATION ────────────────────────────────────────────────────────────
@@ -314,6 +441,11 @@ model Notification {
   data      Json?
   read      Boolean          @default(false)
   createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read])
+  @@index([createdAt])
 }
 
 enum NotificationType {
@@ -325,4 +457,6 @@ enum NotificationType {
   PAYMENT_SENT
   NEW_APPLICANT
   REVIEW_RECEIVED
+  DEPOSIT_CONFIRMED
+  WALLET_CASHOUT
 }

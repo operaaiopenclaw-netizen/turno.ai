@@ -2,7 +2,7 @@
 // src/components/ui/index.tsx
 // All small shared UI components
 
-import { ReactNode, InputHTMLAttributes, TextareaHTMLAttributes, SelectHTMLAttributes, useEffect } from "react"
+import React, { ReactNode, InputHTMLAttributes, TextareaHTMLAttributes, SelectHTMLAttributes, useEffect } from "react"
 import { getInitials } from "@/lib/utils"
 
 // ─── CARD ─────────────────────────────────────────────────────────────────────
@@ -11,11 +11,13 @@ export function Card({
   className = "",
   onClick,
   highlight,
+  style,
 }: {
   children: ReactNode
   className?: string
   onClick?: () => void
   highlight?: "primary" | "orange" | "red" | "purple"
+  style?: React.CSSProperties
 }) {
   const borders = {
     primary: "border-[--primary]/30 bg-[--primary-dim]",
@@ -26,6 +28,7 @@ export function Card({
   return (
     <div
       onClick={onClick}
+      style={style}
       className={`
         card ${onClick ? "card-clickable" : ""}
         ${highlight ? borders[highlight] : ""}

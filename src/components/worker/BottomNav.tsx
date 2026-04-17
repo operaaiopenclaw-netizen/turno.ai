@@ -6,10 +6,11 @@ import { usePathname } from "next/navigation"
 import { useEffect, useState } from "react"
 
 const TABS = [
-  { href: "/worker",              icon: "🔍", label: "Turnos" },
+  { href: "/worker",              icon: "🔍", label: "Turnos"      },
   { href: "/worker/meus-turnos",  icon: "📋", label: "Meus Turnos" },
-  { href: "/worker/notificacoes", icon: "🔔", label: "Alertas" },
-  { href: "/worker/perfil",       icon: "👤", label: "Perfil" },
+  { href: "/worker/carteira",     icon: "💳", label: "Carteira"    },
+  { href: "/worker/notificacoes", icon: "🔔", label: "Alertas"     },
+  { href: "/worker/perfil",       icon: "👤", label: "Perfil"      },
 ]
 
 export function BottomNav() {
@@ -21,7 +22,7 @@ export function BottomNav() {
       try {
         const res  = await fetch("/api/notifications")
         const json = await res.json()
-        setUnread((json.data ?? []).filter((n: any) => !n.read).length)
+        setUnread((json.data ?? []).filter((n: { read: boolean }) => !n.read).length)
       } catch {}
     }
     fetchUnread()
@@ -42,8 +43,8 @@ export function BottomNav() {
       paddingBottom: "env(safe-area-inset-bottom, 8px)",
     }}>
       {TABS.map(tab => {
-        const isActive  = tab.href === "/worker" ? pathname === "/worker" : pathname.startsWith(tab.href)
-        const isNotif   = tab.href === "/worker/notificacoes"
+        const isActive = tab.href === "/worker" ? pathname === "/worker" : pathname.startsWith(tab.href)
+        const isNotif  = tab.href === "/worker/notificacoes"
         return (
           <Link key={tab.href} href={tab.href} style={{
             flex: 1, display: "flex", flexDirection: "column",
@@ -63,7 +64,7 @@ export function BottomNav() {
               )}
             </span>
             <span style={{
-              fontSize: 10,
+              fontSize: 9,
               color: isActive ? "var(--primary)" : "var(--txt-3)",
               fontWeight: isActive ? 600 : 400,
             }}>{tab.label}</span>
