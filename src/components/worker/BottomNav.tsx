@@ -1,9 +1,9 @@
 "use client"
-// src/components/worker/BottomNav.tsx
+// src/components/worker/BottomNav.tsx — SSE em vez de polling
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { useEffect, useState } from "react"
+import { useEffect, useState, useRef } from "react"
 
 const TABS = [
   { href: "/worker",              icon: "🔍", label: "Turnos"      },
@@ -16,18 +16,30 @@ const TABS = [
 export function BottomNav() {
   const pathname = usePathname()
   const [unread, setUnread] = useState(0)
+  const esRef = useRef<EventSource | null>(null)
 
   useEffect(() => {
-    async function fetchUnread() {
-      try {
-        const res  = await fetch("/api/notifications")
-        const json = await res.json()
-        setUnread((json.data ?? []).filter((n: { read: boolean }) => !n.read).length)
-      } catch {}
+    function connect() {
+      if (esRef.current) esRef.current.close()
+      const es = new EventSource("/api/notifications/stream")
+      esRef.current = es
+
+      es.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data)
+          if (data.type === "unread_count") setUnread(data.count ?? 0)
+        } catch {}
+      }
+
+      es.onerror = () => {
+        es.close()
+        // Reconecta após 15s se a conexão cair
+        setTimeout(connect, 15_000)
+      }
     }
-    fetchUnread()
-    const id = setInterval(fetchUnread, 30_000)
-    return () => clearInterval(id)
+
+    connect()
+    return () => { esRef.current?.close() }
   }, [])
 
   return (

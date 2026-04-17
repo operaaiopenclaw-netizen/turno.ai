@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import bcrypt from "bcryptjs"
 import { validateCPF } from "@/lib/utils"
+import { verifyCPF } from "@/lib/kyc"
+import { emailService } from "@/lib/email"
 
 export async function POST(req: NextRequest) {
   try {
@@ -35,6 +37,9 @@ export async function POST(req: NextRequest) {
 
     const passwordHash = await bcrypt.hash(password, 12)
 
+    // KYC: verify CPF against Serpro (mock in dev)
+    const cpfVerified = await verifyCPF(cleanCPF, name)
+
     const user = await db.user.create({
       data: {
         name,
@@ -49,7 +54,7 @@ export async function POST(req: NextRequest) {
             pixKey,
             pixKeyType:   pixKeyType ?? "EMAIL",
             neighborhood: neighborhood ?? null,
-            cpfVerified:  true, // In prod: integrate with Serpro
+            cpfVerified,
             skills: {
               create: (skills as string[] ?? []).map((s: string) => ({ skill: s })),
             },
@@ -58,6 +63,9 @@ export async function POST(req: NextRequest) {
       },
       include: { worker: true },
     })
+
+    // Welcome email (mocked in dev)
+    await emailService.welcomeWorker(email, name)
 
     return NextResponse.json({
       data: { id: user.id, email: user.email, name: user.name },

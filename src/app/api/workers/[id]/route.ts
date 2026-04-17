@@ -56,7 +56,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     }
 
     const body = await req.json()
-    const { bio, pixKey, pixKeyType, neighborhood, skills } = body
+    const { bio, pixKey, pixKeyType, neighborhood, phone, skills } = body
 
     const updated = await db.worker.update({
       where: { id: params.id },
@@ -65,6 +65,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         pixKey:       pixKey       ?? undefined,
         pixKeyType:   pixKeyType   ?? undefined,
         neighborhood: neighborhood ?? undefined,
+        phone:        phone        ?? undefined,
         ...(skills ? {
           skills: {
             deleteMany: {},
