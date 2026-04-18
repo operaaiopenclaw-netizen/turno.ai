@@ -25,12 +25,10 @@ async function findUserByEmail(email: string) {
   return { ...user, workerId: workers?.[0]?.id ?? null, companyId: companies?.[0]?.id ?? null }
 }
 
+import { authConfig } from "@/auth.config"
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
-  session: { strategy: "jwt" },
-  pages: {
-    signIn: "/",
-    error: "/",
-  },
+  ...authConfig,
   providers: [
     CredentialsProvider({
       name: "credentials",
@@ -61,25 +59,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       },
     }),
   ],
-  callbacks: {
-    async jwt({ token, user }) {
-      if (user) {
-        token.role = (user as any).role
-        token.workerId = (user as any).workerId
-        token.companyId = (user as any).companyId
-      }
-      return token
-    },
-    async session({ session, token }) {
-      if (session.user) {
-        session.user.id = token.sub!
-        ;(session.user as any).role = token.role
-        ;(session.user as any).workerId = token.workerId
-        ;(session.user as any).companyId = token.companyId
-      }
-      return session
-    },
-  },
 })
 
 // Helper: get current session's company ID from a request
