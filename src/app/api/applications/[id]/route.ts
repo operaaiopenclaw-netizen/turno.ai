@@ -1,13 +1,12 @@
 // src/app/api/applications/[id]/route.ts
 import { NextRequest, NextResponse } from "next/server"
-import { db } from "@/lib/db"
+import { supa } from "@/lib/supabase"
 import { auth } from "@/lib/auth"
-import { whatsapp } from "@/lib/whatsapp"
 
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
   try {
     const session   = await auth()
-    const companyId = (session?.user as { companyId?: string })?.companyId
+    const companyId = (session?.user as any)?.companyId
     if (!companyId) return NextResponse.json({ error: "Não autorizado" }, { status: 401 })
 
     const { status } = await req.json()
@@ -15,110 +14,68 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       return NextResponse.json({ error: "Status inválido" }, { status: 400 })
     }
 
-    const application = await db.application.findUnique({
-      where:   { id: params.id },
-      include: {
-        shift:  { include: { company: { select: { tradeName: true } } } },
-        worker: { include: { user: { select: { id: true, name: true } } } },
-      },
-    })
+    const { data: application } = await supa
+      .from("Application")
+      .select("id, shiftId, workerId, status, Shift(id, companyId, role, filledSpots, spots, date, startTime, Company(tradeName, userId)), Worker(id, phone, User(id, name))")
+      .eq("id", params.id)
+      .single()
 
     if (!application) return NextResponse.json({ error: "Candidatura não encontrada" }, { status: 404 })
-    if (application.shift.companyId !== companyId) {
-      return NextResponse.json({ error: "Não autorizado" }, { status: 403 })
-    }
-    if (application.status !== "PENDING") {
-      return NextResponse.json({ error: "Candidatura já decidida" }, { status: 400 })
-    }
+
+    const shift     = (application as any).Shift
+    const worker    = (application as any).Worker
+    const workerUser = worker?.User
+
+    if (shift?.companyId !== companyId) return NextResponse.json({ error: "Não autorizado" }, { status: 403 })
+    if (application.status !== "PENDING") return NextResponse.json({ error: "Candidatura já decidida" }, { status: 400 })
 
     if (status === "ACCEPTED") {
-      // Usa transação atômica para evitar race condition nos spots
-      const result = await db.$transaction(async (tx) => {
-        const shift = await tx.shift.findUnique({
-          where: { id: application.shiftId },
-          select: { spots: true, filledSpots: true, status: true },
-        })
+      if (!shift || shift.status === "FILLED" || shift.filledSpots >= shift.spots) {
+        return NextResponse.json({ error: "Vagas esgotadas para este turno" }, { status: 409 })
+      }
 
-        if (!shift || shift.status === "FILLED" || shift.filledSpots >= shift.spots) {
-          throw new Error("Vagas esgotadas")
-        }
+      await supa.from("Application").update({ status: "ACCEPTED", decidedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }).eq("id", params.id)
 
-        const updatedApp = await tx.application.update({
-          where: { id: params.id },
-          data:  { status: "ACCEPTED", decidedAt: new Date() },
-        })
+      const newFilledSpots = shift.filledSpots + 1
+      await supa.from("Shift").update({
+        filledSpots: newFilledSpots,
+        ...(newFilledSpots >= shift.spots ? { status: "FILLED" } : {}),
+        updatedAt: new Date().toISOString(),
+      }).eq("id", application.shiftId)
 
-        const updatedShift = await tx.shift.update({
-          where: { id: application.shiftId },
-          data:  { filledSpots: { increment: 1 } },
-        })
-
-        if (updatedShift.filledSpots >= updatedShift.spots) {
-          await tx.shift.update({
-            where: { id: application.shiftId },
-            data:  { status: "FILLED" },
-          })
-        }
-
-        await tx.timesheet.create({
-          data: {
-            applicationId: params.id,
-            shiftId:       application.shiftId,
-            workerId:      application.workerId,
-            status:        "PENDING",
-          },
-        })
-
-        await tx.notification.create({
-          data: {
-            userId: application.worker.user.id,
-            type:   "APPLICATION_ACCEPTED",
-            title:  "Candidatura aceita! 🎉",
-            body:   `Você foi contratado para ${application.shift.role} em ${application.shift.company.tradeName}.`,
-            data:   { applicationId: params.id, shiftId: application.shiftId },
-          },
-        })
-
-        return updatedApp
+      await supa.from("Timesheet").insert({
+        id: crypto.randomUUID(), applicationId: params.id, shiftId: application.shiftId,
+        workerId: application.workerId, status: "PENDING", updatedAt: new Date().toISOString(),
       })
 
-      // WhatsApp fora da transação — falha não bloqueia o fluxo
-      try {
-        await whatsapp.notifyAccepted(
-          application.worker.phone ?? "",
-          application.worker.user.name ?? "Trabalhador",
-          application.shift.role,
-          application.shift.company.tradeName,
-          application.shift.date.toLocaleDateString("pt-BR"),
-          application.shift.startTime
-        )
-      } catch { /* log apenas */ }
+      if (workerUser?.id) {
+        await supa.from("Notification").insert({
+          id: crypto.randomUUID(), userId: workerUser.id, type: "APPLICATION_ACCEPTED",
+          title: "Candidatura aceita! 🎉",
+          body: `Você foi contratado para ${shift.role} em ${shift.Company?.tradeName ?? "empresa"}.`,
+          data: { applicationId: params.id, shiftId: application.shiftId },
+          read: false, createdAt: new Date().toISOString(),
+        })
+      }
 
-      return NextResponse.json({ data: result })
+      return NextResponse.json({ data: { id: params.id, status: "ACCEPTED" } })
     }
 
-    // Status REJECTED
-    const updated = await db.application.update({
-      where: { id: params.id },
-      data:  { status: "REJECTED", decidedAt: new Date() },
-    })
+    // REJECTED
+    await supa.from("Application").update({ status: "REJECTED", decidedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }).eq("id", params.id)
 
-    await db.notification.create({
-      data: {
-        userId: application.worker.user.id,
-        type:   "APPLICATION_REJECTED",
-        title:  "Candidatura não aprovada",
-        body:   `Sua candidatura para ${application.shift.role} não foi aprovada desta vez.`,
-        data:   { applicationId: params.id, shiftId: application.shiftId },
-      },
-    })
+    if (workerUser?.id) {
+      await supa.from("Notification").insert({
+        id: crypto.randomUUID(), userId: workerUser.id, type: "APPLICATION_REJECTED",
+        title: "Candidatura não aprovada",
+        body: `Sua candidatura para ${shift?.role ?? "turno"} não foi aprovada desta vez.`,
+        data: { applicationId: params.id, shiftId: application.shiftId },
+        read: false, createdAt: new Date().toISOString(),
+      })
+    }
 
-    return NextResponse.json({ data: updated })
+    return NextResponse.json({ data: { id: params.id, status: "REJECTED" } })
   } catch (err) {
-    const msg = (err as Error).message
-    if (msg === "Vagas esgotadas") {
-      return NextResponse.json({ error: "Vagas esgotadas para este turno" }, { status: 409 })
-    }
     console.error("[PATCH /api/applications/[id]]", err)
     return NextResponse.json({ error: "Erro ao atualizar candidatura" }, { status: 500 })
   }

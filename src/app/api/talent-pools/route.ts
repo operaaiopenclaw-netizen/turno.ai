@@ -1,33 +1,31 @@
 // src/app/api/talent-pools/route.ts
-import { NextRequest, NextResponse } from "next/server"
-import { db } from "@/lib/db"
+import { NextResponse } from "next/server"
+import { supa } from "@/lib/supabase"
 import { auth } from "@/lib/auth"
 
-// GET: list company's talent pool
 export async function GET() {
   try {
     const session   = await auth()
     const companyId = (session?.user as any)?.companyId
     if (!companyId) return NextResponse.json({ error: "Não autorizado" }, { status: 401 })
 
-    // Get workers who have completed shifts for this company with high ratings
-    const acceptedApps = await db.application.findMany({
-      where: {
-        status: "ACCEPTED",
-        shift:  { companyId },
-      },
-      distinct: ["workerId"],
-      include: {
-        worker: {
-          include: {
-            user:   { select: { name: true, email: true } },
-            skills: true,
-          },
-        },
-      },
-    })
+    const { data: shifts } = await supa.from("Shift").select("id").eq("companyId", companyId)
+    const shiftIds = (shifts ?? []).map((s: any) => s.id)
 
-    const workers = acceptedApps.map(a => a.worker).filter(Boolean)
+    if (shiftIds.length === 0) return NextResponse.json({ data: [] })
+
+    const { data: apps } = await supa
+      .from("Application")
+      .select("workerId, Worker(*, User(name, email), WorkerSkill(skill))")
+      .eq("status", "ACCEPTED")
+      .in("shiftId", shiftIds)
+
+    // Deduplicate by workerId
+    const seen = new Set<string>()
+    const workers = (apps ?? [])
+      .filter((a: any) => { if (seen.has(a.workerId)) return false; seen.add(a.workerId); return true })
+      .map((a: any) => a.Worker)
+      .filter(Boolean)
 
     return NextResponse.json({ data: workers })
   } catch (err) {

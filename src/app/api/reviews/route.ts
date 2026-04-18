@@ -1,112 +1,97 @@
 // src/app/api/reviews/route.ts
 import { NextRequest, NextResponse } from "next/server"
-import { db } from "@/lib/db"
+import { supa } from "@/lib/supabase"
 import { auth } from "@/lib/auth"
 
 export async function POST(req: NextRequest) {
   try {
-    const session  = await auth()
-    const workerId  = (session?.user as { workerId?: string })?.workerId
-    const companyId = (session?.user as { companyId?: string })?.companyId
+    const session   = await auth()
+    const workerId  = (session?.user as any)?.workerId
+    const companyId = (session?.user as any)?.companyId
     const userId    = session?.user?.id
 
-    if (!workerId && !companyId) {
-      return NextResponse.json({ error: "Não autorizado" }, { status: 401 })
-    }
+    if (!workerId && !companyId) return NextResponse.json({ error: "Não autorizado" }, { status: 401 })
 
     const { shiftId, rating, comment, revieweeId } = await req.json()
-
     if (!shiftId || !rating || rating < 1 || rating > 5) {
       return NextResponse.json({ error: "Dados inválidos" }, { status: 400 })
     }
 
-    // Valida que o reviewer participou do shift
     if (workerId) {
-      const app = await db.application.findFirst({
-        where: {
-          shiftId,
-          workerId,
-          status:    "ACCEPTED",
-          timesheet: { status: "APPROVED" },
-        },
-      })
-      if (!app) {
+      const { data: app } = await supa
+        .from("Application")
+        .select("id, Timesheet(status)")
+        .eq("shiftId", shiftId)
+        .eq("workerId", workerId)
+        .eq("status", "ACCEPTED")
+        .single()
+
+      const ts = (app as any)?.Timesheet
+      const tsArr = Array.isArray(ts) ? ts : ts ? [ts] : []
+      if (!app || !tsArr.some((t: any) => t.status === "APPROVED")) {
         return NextResponse.json({ error: "Você precisa ter trabalhado neste turno para avaliar" }, { status: 403 })
       }
-    }
 
-    const reviewerUserId = userId ?? ""
-
-    // Worker avalia empresa
-    if (workerId) {
-      const company = await db.company.findUnique({ where: { id: revieweeId } })
+      const { data: company } = await supa.from("Company").select("id, userId, tradeName").eq("id", revieweeId).single()
       if (!company) return NextResponse.json({ error: "Empresa não encontrada" }, { status: 404 })
 
-      const review = await db.review.upsert({
-        where:  { reviewerId_shiftId: { reviewerId: reviewerUserId, shiftId } },
-        update: { rating: parseInt(rating), comment: comment ?? null },
-        create: {
-          fromType:   "WORKER",
-          reviewerId: reviewerUserId,
-          workerId,
-          companyId:  revieweeId,
-          rating:     parseInt(rating),
-          comment:    comment ?? null,
-          shiftId,
-        },
-      })
+      const { data: existing } = await supa.from("Review").select("id").eq("reviewerId", userId!).eq("shiftId", shiftId).single()
+      const reviewData = {
+        fromType: "WORKER", reviewerId: userId!, workerId, companyId: revieweeId,
+        rating: parseInt(rating), comment: comment ?? null, shiftId, updatedAt: new Date().toISOString(),
+      }
 
-      const allReviews = await db.review.findMany({ where: { companyId: revieweeId } })
-      const avg = allReviews.reduce((s, r) => s + r.rating, 0) / allReviews.length
-      await db.company.update({ where: { id: revieweeId }, data: { rating: Math.round(avg * 10) / 10 } })
+      let review: any
+      if (existing) {
+        await supa.from("Review").update({ rating: parseInt(rating), comment: comment ?? null, updatedAt: new Date().toISOString() }).eq("id", existing.id)
+        review = existing
+      } else {
+        const { data } = await supa.from("Review").insert({ id: crypto.randomUUID(), ...reviewData, createdAt: new Date().toISOString() }).select().single()
+        review = data
+      }
 
-      await db.notification.create({
-        data: {
-          userId: company.userId,
-          type:   "REVIEW_RECEIVED",
-          title:  "Nova avaliação recebida ⭐",
-          body:   `Um trabalhador deu nota ${rating}/5 para ${company.tradeName}`,
-          data:   { shiftId, rating },
-        },
+      const { data: allReviews } = await supa.from("Review").select("rating").eq("companyId", revieweeId)
+      const avg = (allReviews ?? []).reduce((s: number, r: any) => s + r.rating, 0) / (allReviews ?? []).length
+      await supa.from("Company").update({ rating: Math.round(avg * 10) / 10, updatedAt: new Date().toISOString() }).eq("id", revieweeId)
+
+      await supa.from("Notification").insert({
+        id: crypto.randomUUID(), userId: company.userId, type: "REVIEW_RECEIVED",
+        title: "Nova avaliação recebida ⭐",
+        body: `Um trabalhador deu nota ${rating}/5 para ${company.tradeName}`,
+        data: { shiftId, rating }, read: false, createdAt: new Date().toISOString(),
       })
 
       return NextResponse.json({ data: review }, { status: 201 })
     }
 
-    // Empresa avalia worker
     if (companyId) {
-      const worker = await db.worker.findUnique({
-        where: { id: revieweeId },
-        include: { user: true },
-      })
+      const { data: worker } = await supa.from("Worker").select("id, userId").eq("id", revieweeId).single()
       if (!worker) return NextResponse.json({ error: "Trabalhador não encontrado" }, { status: 404 })
 
-      const review = await db.review.upsert({
-        where:  { reviewerId_shiftId: { reviewerId: reviewerUserId, shiftId } },
-        update: { rating: parseInt(rating), comment: comment ?? null },
-        create: {
-          fromType:   "COMPANY",
-          reviewerId: reviewerUserId,
-          workerId:   revieweeId,
-          companyId,
-          rating:     parseInt(rating),
-          comment:    comment ?? null,
-          shiftId,
-        },
-      })
+      const { data: existing } = await supa.from("Review").select("id").eq("reviewerId", userId!).eq("shiftId", shiftId).single()
+      const reviewData = {
+        fromType: "COMPANY", reviewerId: userId!, workerId: revieweeId, companyId,
+        rating: parseInt(rating), comment: comment ?? null, shiftId, updatedAt: new Date().toISOString(),
+      }
 
-      const allReviews = await db.review.findMany({ where: { workerId: revieweeId, fromType: "COMPANY" } })
-      const avg = allReviews.reduce((s, r) => s + r.rating, 0) / allReviews.length
-      await db.worker.update({ where: { id: revieweeId }, data: { rating: Math.round(avg * 10) / 10 } })
+      let review: any
+      if (existing) {
+        await supa.from("Review").update({ rating: parseInt(rating), comment: comment ?? null, updatedAt: new Date().toISOString() }).eq("id", existing.id)
+        review = existing
+      } else {
+        const { data } = await supa.from("Review").insert({ id: crypto.randomUUID(), ...reviewData, createdAt: new Date().toISOString() }).select().single()
+        review = data
+      }
 
-      await db.notification.create({
-        data: {
-          userId: worker.userId,
-          type:   "REVIEW_RECEIVED",
-          title:  "Nova avaliação recebida ⭐",
-          body:   `Você recebeu nota ${rating}/5 de uma empresa`,
-          data:   { shiftId, rating },
-        },
+      const { data: allReviews } = await supa.from("Review").select("rating").eq("workerId", revieweeId).eq("fromType", "COMPANY")
+      const avg = (allReviews ?? []).reduce((s: number, r: any) => s + r.rating, 0) / (allReviews ?? []).length
+      await supa.from("Worker").update({ rating: Math.round(avg * 10) / 10, updatedAt: new Date().toISOString() }).eq("id", revieweeId)
+
+      await supa.from("Notification").insert({
+        id: crypto.randomUUID(), userId: worker.userId, type: "REVIEW_RECEIVED",
+        title: "Nova avaliação recebida ⭐",
+        body: `Você recebeu nota ${rating}/5 de uma empresa`,
+        data: { shiftId, rating }, read: false, createdAt: new Date().toISOString(),
       })
 
       return NextResponse.json({ data: review }, { status: 201 })
@@ -114,10 +99,6 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ error: "Erro inesperado" }, { status: 500 })
   } catch (err: unknown) {
-    // Duplicate review — silently handle
-    if ((err as { code?: string })?.code === "P2002") {
-      return NextResponse.json({ error: "Você já avaliou este turno" }, { status: 409 })
-    }
     console.error("[POST /api/reviews]", err)
     return NextResponse.json({ error: "Erro interno" }, { status: 500 })
   }
@@ -129,16 +110,11 @@ export async function GET(req: NextRequest) {
   const companyId = searchParams.get("companyId")
   const shiftId   = searchParams.get("shiftId")
 
-  const where: Record<string, unknown> = {}
-  if (workerId)  where.workerId  = workerId
-  if (companyId) where.companyId = companyId
-  if (shiftId)   where.shiftId   = shiftId
+  let query = supa.from("Review").select("*").order("createdAt", { ascending: false }).limit(50)
+  if (workerId)  query = query.eq("workerId", workerId)
+  if (companyId) query = query.eq("companyId", companyId)
+  if (shiftId)   query = query.eq("shiftId", shiftId)
 
-  const reviews = await db.review.findMany({
-    where,
-    orderBy: { createdAt: "desc" },
-    take:    50,
-  })
-
-  return NextResponse.json({ data: reviews })
+  const { data: reviews } = await query
+  return NextResponse.json({ data: reviews ?? [] })
 }

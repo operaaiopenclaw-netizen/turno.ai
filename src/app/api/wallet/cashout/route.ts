@@ -1,10 +1,9 @@
 // src/app/api/wallet/cashout/route.ts
 import { NextRequest, NextResponse } from "next/server"
-import { auth } from "@/auth"
-import { db } from "@/lib/db"
+import { auth } from "@/lib/auth"
+import { supa } from "@/lib/supabase"
 import { walletService } from "@/lib/wallet"
 
-// POST /api/wallet/cashout — worker saca para PIX
 export async function POST(req: NextRequest) {
   const session = await auth()
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
@@ -19,10 +18,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Valor inválido" }, { status: 400 })
   }
 
-  const worker = await db.worker.findUnique({
-    where:   { userId: session.user.id },
-    include: { user: true },
-  })
+  const { data: worker } = await supa
+    .from("Worker")
+    .select("pixKey, pixKeyType, User(name)")
+    .eq("userId", session.user.id)
+    .single()
+
   if (!worker?.pixKey) {
     return NextResponse.json({ error: "Configure sua chave PIX no perfil antes de sacar" }, { status: 400 })
   }
@@ -33,7 +34,7 @@ export async function POST(req: NextRequest) {
       Number(amount),
       worker.pixKey,
       worker.pixKeyType ?? "EMAIL",
-      worker.user.name ?? "Worker Turno"
+      (worker as any).User?.name ?? "Worker Turno"
     )
     return NextResponse.json(result)
   } catch (err: unknown) {

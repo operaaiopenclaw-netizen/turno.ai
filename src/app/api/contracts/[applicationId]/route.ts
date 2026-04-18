@@ -1,6 +1,5 @@
 // src/app/api/contracts/[applicationId]/route.ts
 import { NextRequest, NextResponse } from "next/server"
-import { db } from "@/lib/db"
 import { auth } from "@/lib/auth"
 import { buildContractData, generateContractHTML } from "@/lib/contract"
 
@@ -14,15 +13,14 @@ export async function GET(_req: NextRequest, { params }: { params: { application
       return NextResponse.json({ error: "Não autorizado" }, { status: 401 })
     }
 
-    const data = await buildContractData(params.applicationId, db)
+    const data = await buildContractData(params.applicationId)
     if (!data) return NextResponse.json({ error: "Candidatura não encontrada" }, { status: 404 })
 
     const html = generateContractHTML(data)
 
-    // Return as HTML for browser viewing / PDF printing
     return new NextResponse(html, {
       headers: {
-        "Content-Type": "text/html; charset=utf-8",
+        "Content-Type":        "text/html; charset=utf-8",
         "Content-Disposition": `inline; filename="contrato-${data.contractId}.html"`,
       },
     })

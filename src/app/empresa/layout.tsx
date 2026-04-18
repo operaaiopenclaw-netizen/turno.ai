@@ -1,19 +1,15 @@
 // src/app/empresa/layout.tsx
 import { auth } from "@/lib/auth"
-import { db } from "@/lib/db"
+import { supa } from "@/lib/supabase"
 import { redirect } from "next/navigation"
 import { Sidebar } from "@/components/business/Sidebar"
 
 export default async function EmpresaLayout({ children }: { children: React.ReactNode }) {
   const session   = await auth()
   const companyId = (session?.user as any)?.companyId
+  if (!companyId) redirect("/")
 
-  if (!companyId) redirect("/login")
-
-  const company = await db.company.findUnique({
-    where: { id: companyId },
-    select: { tradeName: true },
-  })
+  const { data: company } = await supa.from("Company").select("tradeName").eq("id", companyId).single()
 
   return (
     <div className="biz-layout">

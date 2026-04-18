@@ -1,9 +1,8 @@
 // src/app/api/applications/route.ts
 import { NextRequest, NextResponse } from "next/server"
-import { db } from "@/lib/db"
+import { supa } from "@/lib/supabase"
 import { auth } from "@/lib/auth"
 
-// GET: list applications (for company: their shifts' apps; for worker: their own)
 export async function GET(req: NextRequest) {
   try {
     const session   = await auth()
@@ -16,42 +15,29 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Não autorizado" }, { status: 401 })
     }
 
-    const where: Record<string, unknown> = {}
-    if (workerId)  where.workerId = workerId
-    if (shiftId)   where.shiftId  = shiftId
-    if (companyId && !shiftId) {
-      // All applications for all shifts of this company
-      where.shift = { companyId }
+    let query = supa
+      .from("Application")
+      .select("*, Worker(*, User(name, email, image), WorkerSkill(skill)), Shift(*, Company(tradeName, neighborhood)), Timesheet(*), Payment(*)")
+      .order("appliedAt", { ascending: false })
+
+    if (workerId)  query = query.eq("workerId", workerId)
+    if (shiftId)   query = query.eq("shiftId", shiftId)
+
+    if (companyId && !shiftId && !workerId) {
+      const { data: shifts } = await supa.from("Shift").select("id").eq("companyId", companyId)
+      const ids = (shifts ?? []).map((s: any) => s.id)
+      if (ids.length === 0) return NextResponse.json({ data: [] })
+      query = query.in("shiftId", ids)
     }
 
-    const applications = await db.application.findMany({
-      where,
-      include: {
-        worker: {
-          include: {
-            user:   { select: { name: true, email: true, image: true } },
-            skills: true,
-          },
-        },
-        shift: {
-          include: {
-            company: { select: { tradeName: true, neighborhood: true } },
-          },
-        },
-        timesheet: true,
-        payment:   true,
-      },
-      orderBy: { appliedAt: "desc" },
-    })
-
-    return NextResponse.json({ data: applications })
+    const { data: applications } = await query
+    return NextResponse.json({ data: applications ?? [] })
   } catch (err) {
     console.error("[GET /api/applications]", err)
     return NextResponse.json({ error: "Erro interno" }, { status: 500 })
   }
 }
 
-// POST: worker applies to a shift
 export async function POST(req: NextRequest) {
   try {
     const session  = await auth()
@@ -61,39 +47,27 @@ export async function POST(req: NextRequest) {
     const { shiftId, message } = await req.json()
     if (!shiftId) return NextResponse.json({ error: "shiftId obrigatório" }, { status: 400 })
 
-    // Check shift exists and is open
-    const shift = await db.shift.findUnique({ where: { id: shiftId } })
-    if (!shift)              return NextResponse.json({ error: "Turno não encontrado" }, { status: 404 })
+    const { data: shift } = await supa.from("Shift").select("id, status, filledSpots, spots, companyId, role").eq("id", shiftId).single()
+    if (!shift)                return NextResponse.json({ error: "Turno não encontrado" }, { status: 404 })
     if (shift.status !== "OPEN") return NextResponse.json({ error: "Turno não está aberto" }, { status: 400 })
-    if (shift.filledSpots >= shift.spots) {
-      return NextResponse.json({ error: "Turno já está completo" }, { status: 400 })
-    }
+    if (shift.filledSpots >= shift.spots) return NextResponse.json({ error: "Turno já está completo" }, { status: 400 })
 
-    // Check for duplicate
-    const existing = await db.application.findUnique({
-      where: { shiftId_workerId: { shiftId, workerId } },
-    })
+    const { data: existing } = await supa.from("Application").select("id").eq("shiftId", shiftId).eq("workerId", workerId).single()
     if (existing) return NextResponse.json({ error: "Já candidatado a este turno" }, { status: 400 })
 
-    const application = await db.application.create({
-      data: { shiftId, workerId, message: message ?? null },
-      include: {
-        shift:  { include: { company: { select: { tradeName: true } } } },
-        worker: { include: { user: { select: { name: true } } } },
-      },
-    })
+    const appId = crypto.randomUUID()
+    const { data: application } = await supa.from("Application").insert({
+      id: appId, shiftId, workerId, message: message ?? null,
+      status: "PENDING", appliedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    }).select("*, Worker(User(name)), Shift(role, Company(tradeName, userId))").single()
 
-    // Create notification for company
-    const company = await db.company.findUnique({ where: { id: shift.companyId } })
-    if (company) {
-      await db.notification.create({
-        data: {
-          userId: company.userId,
-          type:   "NEW_APPLICANT",
-          title:  "Novo candidato",
-          body:   `${application.worker.user.name} se candidatou para ${shift.role}`,
-          data:   { shiftId, applicationId: application.id },
-        },
+    const companyUserId = (application as any)?.Shift?.Company?.userId
+    const workerName    = (application as any)?.Worker?.User?.name ?? "Trabalhador"
+    if (companyUserId) {
+      await supa.from("Notification").insert({
+        id: crypto.randomUUID(), userId: companyUserId, type: "NEW_APPLICANT",
+        title: "Novo candidato", body: `${workerName} se candidatou para ${shift.role}`,
+        data: { shiftId, applicationId: appId }, read: false, createdAt: new Date().toISOString(),
       })
     }
 

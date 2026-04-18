@@ -1,23 +1,20 @@
 // src/app/api/wallet/card/route.ts
 import { NextResponse } from "next/server"
-import { auth } from "@/auth"
+import { auth } from "@/lib/auth"
+import { supa } from "@/lib/supabase"
 import { walletService } from "@/lib/wallet"
-import { db } from "@/lib/db"
 
-// GET /api/wallet/card — dados do cartão virtual
 export async function GET() {
   const session = await auth()
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
 
-  const wallet = await db.wallet.findUnique({
-    where:   { userId: session.user.id },
-    include: { virtualCard: true },
-  })
+  const { data: wallet } = await supa.from("Wallet").select("id").eq("userId", session.user.id).single()
+  if (!wallet) return NextResponse.json({ virtualCard: null })
 
-  return NextResponse.json({ virtualCard: wallet?.virtualCard ?? null })
+  const { data: virtualCard } = await supa.from("VirtualCard").select("*").eq("walletId", wallet.id).single()
+  return NextResponse.json({ virtualCard: virtualCard ?? null })
 }
 
-// POST /api/wallet/card — solicitar cartão virtual
 export async function POST() {
   const session = await auth()
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
